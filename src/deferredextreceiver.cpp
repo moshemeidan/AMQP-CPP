@@ -12,6 +12,7 @@
  */
 #include "amqpcpp/deferredextreceiver.h"
 #include "amqpcpp/channelimpl.h"
+#include "amqpcpp/monitor.h"
  
 /**
  *  Begin of namespace

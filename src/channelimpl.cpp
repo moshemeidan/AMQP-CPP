@@ -45,11 +45,6 @@
 namespace AMQP {
 
 /**
- *  Constructor
- */
-ChannelImpl::ChannelImpl() = default;
-
-/**
  *  Destructor
  */
 ChannelImpl::~ChannelImpl()
@@ -490,15 +485,12 @@ bool ChannelImpl::publish(const std::string &exchange, const std::string &routin
 {
     // we are going to send out multiple frames, each one will trigger a call to the handler,
     // which in turn could destruct the channel object, we need to monitor that
-    Monitor monitor(this);
+    auto keepalive = shared_from_this();
 
     // @todo do not copy the entire buffer to individual frames
 
     // send the publish frame
     if (!send(BasicPublishFrame(_id, exchange, routingKey, (flags & mandatory) != 0, (flags & immediate) != 0))) return false;
-
-    // channel still valid?
-    if (!monitor.valid()) return false;
 
     // send header
     if (!send(BasicHeaderFrame(_id, envelope))) return false;
@@ -506,8 +498,8 @@ bool ChannelImpl::publish(const std::string &exchange, const std::string &routin
     // if everything has been sent by now
     if (envelope.bodySize() == 0) return true;
 
-    // channel and connection still valid?
-    if (!monitor.valid() || !_connection) return false;
+    // connection still valid?
+    if (!_connection) return false;
 
     // the max payload size is the max frame size minus the bytes for headers and trailer
     uint32_t maxpayload = _connection->maxPayload();
@@ -525,9 +517,6 @@ bool ChannelImpl::publish(const std::string &exchange, const std::string &routin
 
         // send out a body frame
         if (!send(BodyFrame(_id, data + bytessent, (uint32_t)chunksize))) return false;
-
-        // channel still valid?
-        if (!monitor.valid()) return false;
 
         // update counters
         bytessent += chunksize;
@@ -828,7 +817,7 @@ void ChannelImpl::flush()
     _synchronous = false;
 
     // we need to monitor the channel for validity
-    Monitor monitor(this);
+    auto keepalive = shared_from_this();
 
     // send all frames while not in synchronous mode
     while (_connection && !_synchronous && !_queue.empty())
@@ -841,9 +830,6 @@ void ChannelImpl::flush()
 
         // send it over the connection
         _connection->send(std::move(pair.second));
-
-        // the user space handler may have destructed this channel object
-        if (!monitor.valid()) return;
 
         // remove from the list
         _queue.pop();
@@ -866,7 +852,7 @@ void ChannelImpl::reportError(const char *message, bool notifyhandler)
     auto queue(std::move(_queue));
 
     // we are going to call callbacks that could destruct the channel
-    Monitor monitor(this);
+    auto keepalive = shared_from_this();
 
     // call the oldest
     if (_oldestCallback)
@@ -877,9 +863,6 @@ void ChannelImpl::reportError(const char *message, bool notifyhandler)
         
         // call the callback
         auto next = cb->reportError(message);
-
-        // leap out if channel no longer exists
-        if (!monitor.valid()) return;
 
         // in case the callback-shared-pointer is still kept in scope (for example because it
         // is stored in the list of consumers), we do want to ensure that it no longer maintains
@@ -900,9 +883,6 @@ void ChannelImpl::reportError(const char *message, bool notifyhandler)
         // call the callback
         auto next = cb->reportError("Channel is in error state");
 
-        // leap out if channel no longer exists
-        if (!monitor.valid()) return;
-
         // in case the callback-shared-pointer is still kept in scope (for example because it
         // is stored in the list of consumers), we do want to ensure that it no longer maintains
         // a chain of queued deferred objects
@@ -918,16 +898,8 @@ void ChannelImpl::reportError(const char *message, bool notifyhandler)
     // inform handler
     if (notifyhandler && _errorCallback) _errorCallback(message);
 
-    // leap out if object no longer exists
-    if (!monitor.valid()) return;
-    
     // done when the channel was already no longer associated with a connection
     if (!_connection) return;
-    
-    // when we call _connection->remove(this), it is possible that the last reference
-    // to the channelimpl is also dropped and that the object immediately destructs,
-    // this is something that we want to prevent so we create an extra reference to the object here
-    auto self = shared_from_this();
 
     // the connection no longer has to know that this channel exists,
     // because the channel ID is no longer in use

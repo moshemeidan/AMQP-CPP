@@ -21,7 +21,6 @@
 #include "callbacks.h"
 #include "copiedbuffer.h"
 #include "deferred.h"
-#include "monitor.h"
 #include <memory>
 #include <queue>
 #include <map>
@@ -177,7 +176,7 @@ protected:
      *  a friend. By doing this we ensure that nobody can instantiate this
      *  object, and that it can thus only be used inside the library.
      */
-    ChannelImpl();
+    ChannelImpl() = default;
 
 public:
     /**
@@ -640,14 +639,11 @@ public:
         _state = state_closed;
 
         // create a monitor, because the callbacks could destruct the current object
-        Monitor monitor(this);
+        auto keepalive = shared_from_this();
 
         // and pass on to the reportSuccess() method which will call the
         // appropriate deferred object to report the successful operation
         bool result = reportSuccess();
-
-        // leap out if object no longer exists
-        if (!monitor.valid()) return result;
 
         // all later deferred objects should report an error, because it
         // was not possible to complete the instruction as the channel is
@@ -673,13 +669,10 @@ public:
         if (!_oldestCallback) return true;
 
         // we are going to call callbacks that could destruct the channel
-        Monitor monitor(this);
+        auto keepalive = shared_from_this();
 
         // flush the queue, which will send the next operation if the current operation was synchronous
         flush();
-
-        // the call to flush may have resulted in a call to reportError
-        if (!monitor.valid()) return false;
 
         // copy the callback (so that it will not be destructed during
         // the "reportSuccess" call, if the channel is destructed during the call)
@@ -691,9 +684,6 @@ public:
         // call the callback
         auto next = cb->reportSuccess(std::forward<Arguments>(parameters)...);
 
-        // leap out if channel no longer exist
-        if (!monitor.valid()) return false;
-        
         // in case the callback-shared-pointer is still kept in scope (for example because it
         // is stored in the list of consumers), we do want to ensure that it no longer maintains
         // a chain of queued deferred objects
